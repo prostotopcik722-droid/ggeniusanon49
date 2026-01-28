@@ -1,207 +1,260 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[codz]
-*$py.class
+import logging
+import asyncio
+import json
+from pathlib import Path
+import time
+from collections import deque
 
-# C extensions
-*.so
+from aiogram import Bot, Dispatcher, Router, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.filters import Command
+from aiogram.types import Message
+from aiogram.enums import ChatType, ParseMode
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+# === НАСТРОЙКИ ===
+# ВАЖНО: не вставляйте токен в переписки/публикуемые места.
+# Если токен уже "светился" — смените его в BotFather и вставьте новый сюда.
+BOT_TOKEN = "8271639521:AAGVLZhlb01rBby-Y0qgHmA5rVhxOxXb4fk"
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
+# Telegram ID админов (числа). Можно узнать через @userinfobot
+# Добавляйте сюда сколько угодно ID.
+ADMIN_IDS = {1590954977, 5810417179}
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+# ID канала, куда пересылать анонимки (обычно начинается с -100...)
+# Бот должен быть админом канала с правом "публиковать сообщения".
+CHANNEL_ID = -1003459870892
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py.cover
-.hypothesis/
-.pytest_cache/
-cover/
+logging.basicConfig(level=logging.INFO)
 
-# Translations
-*.mo
-*.pot
+# Создаем бота и диспетчер
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+)
+dp = Dispatcher()
+router = Router()
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
+BLOCKLIST_PATH = Path(__file__).with_name("blocked_users.json")
 
-# Flask stuff:
-instance/
-.webassets-cache
 
-# Scrapy stuff:
-.scrapy
+def load_blocked_users() -> set[int]:
+    try:
+        if not BLOCKLIST_PATH.exists():
+            return set()
+        data = json.loads(BLOCKLIST_PATH.read_text(encoding="utf-8") or "[]")
+        if isinstance(data, list):
+            return {int(x) for x in data}
+        return set()
+    except Exception:
+        logging.exception("Failed to load %s", BLOCKLIST_PATH)
+        return set()
 
-# Sphinx documentation
-docs/_build/
 
-# PyBuilder
-.pybuilder/
-target/
+def save_blocked_users(blocked: set[int]) -> None:
+    try:
+        BLOCKLIST_PATH.write_text(
+            json.dumps(sorted(blocked), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        logging.exception("Failed to save %s", BLOCKLIST_PATH)
 
-# Jupyter Notebook
-.ipynb_checkpoints
 
-# IPython
-profile_default/
-ipython_config.py
+BLOCKED_USERS: set[int] = load_blocked_users()
 
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
+RATE_LIMIT_MAX = 1          # сколько сообщений
+RATE_LIMIT_WINDOW = 60.0    # за сколько секунд
+_user_timestamps: dict[int, deque[float]] = {}
+_user_last_warn: dict[int, float] = {}
 
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
+FORBIDDEN_WORDS = {
+    "террорист",
+    "терроризм",
+    "бомба",
+    "взрыв",
+    "взорвать",
+    "взрывать",
+    "взрывчатка",
+    "тротил",
+    "детонатор",
+    "теракт",
+}
 
-# UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#uv.lock
 
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-#poetry.lock
-#poetry.toml
+def is_admin(message: Message) -> bool:
+    return bool(message.from_user) and message.from_user.id in ADMIN_IDS
 
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#   pdm recommends including project-wide configuration in pdm.toml, but excluding .pdm-python.
-#   https://pdm-project.org/en/latest/usage/project/#working-with-version-control
-#pdm.lock
-#pdm.toml
-.pdm-python
-.pdm-build/
 
-# pixi
-#   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
-#pixi.lock
-#   Pixi creates a virtual environment in the .pixi directory, just like venv module creates one
-#   in the .venv directory. It is recommended not to include this directory in version control.
-.pixi
+def _normalize_text(s: str) -> str:
+    return s.lower().replace("ё", "е")
 
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
 
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
+def contains_forbidden_words(text: str) -> bool:
+    t = _normalize_text(text)
+    return any(w in t for w in FORBIDDEN_WORDS)
 
-# SageMath parsed files
-*.sage.py
 
-# Environments
-.env
-.envrc
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+def is_rate_limited(user_id: int) -> bool:
+    now = time.monotonic()
+    q = _user_timestamps.get(user_id)
+    if q is None:
+        q = deque()
+        _user_timestamps[user_id] = q
 
-# Spyder project settings
-.spyderproject
-.spyproject
+    # чистим старые
+    cutoff = now - RATE_LIMIT_WINDOW
+    while q and q[0] < cutoff:
+        q.popleft()
 
-# Rope project settings
-.ropeproject
+    if len(q) >= RATE_LIMIT_MAX:
+        return True
 
-# mkdocs documentation
-/site
+    q.append(now)
+    return False
 
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
 
-# Pyre type checker
-.pyre/
+@router.message(Command("block"))
+async def cmd_block(message: Message):
+    if message.chat.type != ChatType.PRIVATE or not is_admin(message):
+        return
 
-# pytype static type analyzer
-.pytype/
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Использование: /block <user_id>")
+        return
 
-# Cython debug symbols
-cython_debug/
+    try:
+        user_id = int(parts[1].strip())
+    except ValueError:
+        await message.answer("Нужно число. Пример: /block 123456789")
+        return
 
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
+    BLOCKED_USERS.add(user_id)
+    save_blocked_users(BLOCKED_USERS)
+    await message.answer(f"✅ Заблокирован user_id: <code>{user_id}</code>")
 
-# Abstra
-# Abstra is an AI-powered process automation framework.
-# Ignore directories containing user credentials, local state, and settings.
-# Learn more at https://abstra.io/docs
-.abstra/
 
-# Visual Studio Code
-#  Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
-#  that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#  and can be added to the global gitignore or merged into this file. However, if you prefer, 
-#  you could uncomment the following to ignore the entire vscode folder
-# .vscode/
+@router.message(Command("unblock"))
+async def cmd_unblock(message: Message):
+    if message.chat.type != ChatType.PRIVATE or not is_admin(message):
+        return
 
-# Ruff stuff:
-.ruff_cache/
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Использование: /unblock <user_id>")
+        return
 
-# PyPI configuration file
-.pypirc
+    try:
+        user_id = int(parts[1].strip())
+    except ValueError:
+        await message.answer("Нужно число. Пример: /unblock 123456789")
+        return
 
-# Cursor
-#  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to
-#  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data
-#  refer to https://docs.cursor.com/context/ignore-files
-.cursorignore
-.cursorindexingignore
+    if user_id in BLOCKED_USERS:
+        BLOCKED_USERS.remove(user_id)
+        save_blocked_users(BLOCKED_USERS)
+        await message.answer(f"✅ Разблокирован user_id: <code>{user_id}</code>")
+    else:
+        await message.answer("Этого user_id нет в блокировке.")
 
-# Marimo
-marimo/_static/
-marimo/_lsp/
-__marimo__/
+
+@router.message(Command("blocked"))
+async def cmd_blocked(message: Message):
+    if message.chat.type != ChatType.PRIVATE or not is_admin(message):
+        return
+
+    if not BLOCKED_USERS:
+        await message.answer("Список блокировок пуст.")
+        return
+
+    ids = "\n".join(f"- <code>{uid}</code>" for uid in sorted(BLOCKED_USERS))
+    await message.answer(f"🚫 Заблокированные user_id:\n{ids}")
+
+
+@router.message(Command("start"))
+async def cmd_start(message: Message):
+    await message.answer(
+        "Привет!\n\n"
+        "Отправь мне сообщение — я анонимно перешлю его в канал.\n"
+        "Поддерживается: текст, музыка, видео, голосовые, кружки."
+    )
+
+
+@router.message(F.chat.type == ChatType.PRIVATE)
+async def handle_private(message: Message):
+    # Игнорируем сообщения от заблокированных пользователей
+    if message.from_user and message.from_user.id in BLOCKED_USERS:
+        return
+
+    # Не пересылаем команды (/start и т.п.)
+    if message.text and message.text.startswith("/"):
+        return
+
+    # Антиспам: ограничение частоты сообщений от одного пользователя
+    if message.from_user:
+        uid = message.from_user.id
+        if is_rate_limited(uid):
+            now = time.monotonic()
+            # не спамим ответами — предупреждаем максимум раз в 5 секунд
+            if now - _user_last_warn.get(uid, 0.0) >= 5.0:
+                _user_last_warn[uid] = now
+                await message.answer("⏳ Слишком часто. Подожди немного и попробуй снова.")
+            return
+
+    # Фильтр запрещённых слов (проверяем текст или подпись к медиа)
+    content_text = (message.text or message.caption or "").strip()
+    if content_text and contains_forbidden_words(content_text):
+        await message.answer("🚫 Сообщение не отправлено: содержит запрещённые слова.")
+        return
+
+    # 1) Копируем в канал АНОНИМНО (без "forwarded from")
+    try:
+        await bot.copy_message(
+            chat_id=CHANNEL_ID,
+            from_chat_id=message.chat.id,
+            message_id=message.message_id,
+        )
+    except Exception:
+        logging.exception("Failed to copy message to channel")
+        await message.answer(
+            "Не получилось отправить этот тип контента в канал. Попробуйте другой файл/формат."
+        )
+        return
+
+    # 2) Админу(ам): инфо + копия контента
+    user = message.from_user
+    admin_text = (
+        "🆕 <b>Анонимное сообщение</b>\n\n"
+        f"<b>От:</b> {user.full_name}\n"
+        f"<b>Username:</b> @{user.username if user.username else 'нет'}\n"
+        f"<b>User ID:</b> <code>{user.id}</code>\n"
+        f"<b>Тип:</b> <code>{message.content_type}</code>"
+    )
+    for admin_id in ADMIN_IDS:
+        await bot.send_message(chat_id=admin_id, text=admin_text)
+        try:
+            await bot.copy_message(
+                chat_id=admin_id,
+                from_chat_id=message.chat.id,
+                message_id=message.message_id,
+            )
+        except Exception:
+            # Если вдруг не копируется админу — хотя бы не падаем
+            logging.exception("Failed to copy message to admin %s", admin_id)
+
+    # 3) Подтверждаем пользователю
+    await message.answer("✅ Сообщение отправлено анонимно в канал.")
+
+
+# Регистрируем роутер
+dp.include_router(router)
+
+
+async def main():
+    # Сбросить накопившиеся апдейты (аналог старого skip_updates=True)
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
