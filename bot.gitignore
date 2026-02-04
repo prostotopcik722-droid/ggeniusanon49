@@ -14,7 +14,7 @@ from aiogram.enums import ChatType, ParseMode
 # === НАСТРОЙКИ ===
 # ВАЖНО: не вставляйте токен в переписки/публикуемые места.
 # Если токен уже "светился" — смените его в BotFather и вставьте новый сюда.
-BOT_TOKEN = "8271639521:AAGVLZhlb01rBby-Y0qgHmA5rVhxOxXb4fk"
+BOT_TOKEN = 
 
 # Telegram ID админов (числа). Можно узнать через @userinfobot
 # Добавляйте сюда сколько угодно ID.
